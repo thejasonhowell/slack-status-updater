@@ -26,19 +26,19 @@ pip install -r requirements.txt
 Create a .env file in the project root and add your Slack token:
 SLACK_TOKEN=xoxp-your-slack-token-here 
 
-🛠️ Usage
+## 🛠️  Usage
 
 Once the app is running, you’ll see a Slack icon in your menu bar. Click it to reveal preset status options. Selecting a status will update your Slack status instantly.
 
-📋 Requirements
+## 📋️  Requirements
 	•	Python 3.9+
 	•	macOS
 	•	Slack user OAuth token (xoxp-)
 
-🧪 Development
+## 🧪Development
 
 Feel free to fork and contribute! Add your own status messages, hook in Apple Shortcuts, or expand to support multiple Slack workspaces.
 
-📜 License
+## 📜License
 
 This project is licensed under the GNU GPL v3.0.
