@@ -24,8 +24,9 @@ source venv/bin/activate
 pip install -r requirements.txt
 3. Configure your environment:
 Create a .env file in the project root and add your Slack token:
-4. SLACK_TOKEN=xoxp-your-slack-token-here
-5. 🛠️ Usage
+SLACK_TOKEN=xoxp-your-slack-token-here 
+
+🛠️ Usage
 
 Once the app is running, you’ll see a Slack icon in your menu bar. Click it to reveal preset status options. Selecting a status will update your Slack status instantly.
 
