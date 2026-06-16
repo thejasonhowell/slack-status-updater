@@ -1,0 +1,42 @@
+{
+  "weekday": [
+    {
+      "label": "Work",
+      "emoji": ":briefcase:",
+      "start": 4,
+      "end": 14
+    },
+    {
+      "label": "Storms",
+      "emoji": ":tornado:",
+      "start": 14,
+      "end": 20
+    },
+    {
+      "label": "Sleep",
+      "emoji": ":sleeping:",
+      "start": 20,
+      "end": 4
+    }
+  ],
+  "weekend": [
+    {
+      "label": "Coffee",
+      "emoji": ":coffee:",
+      "start": 4,
+      "end": 7
+    },
+    {
+      "label": "Storms",
+      "emoji": ":tornado:",
+      "start": 7,
+      "end": 20
+    },
+    {
+      "label": "Sleep",
+      "emoji": ":sleeping:",
+      "start": 20,
+      "end": 4
+    }
+  ]
+}

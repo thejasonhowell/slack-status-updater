@@ -1,48 +1,80 @@
 # Slack Status Menu Bar App
 
-This macOS menu bar application allows you to update your Slack status quickly with preset messages like "In a meeting", "Be right back", and "Working remotely". Built with Python and rumps (Ridiculously Uncomplicated macOS Python Statusbar apps), it provides a lightweight interface for interacting with Slack from your desktop.
+A small macOS menu bar app that keeps your Slack status aligned with your day. It sets a default status on launch, refreshes on a timer, lets you choose quick presets from a floating control panel, and supports custom Slack emoji/status text.
 
-## 📦 Features
+## Features
 
-- 🖥️ macOS menu bar integration
-- ⚡ One-click Slack status updates
-- 🔐 Environment-based Slack token security
-- 🧪 Easy to extend with your own status presets
+- macOS menu bar app built with Python, rumps, and PyObjC
+- Floating control panel with Work, Storms, Sleep, Custom, and current default actions
+- Configurable weekday/weekend status schedule
+- Slack profile readback on launch so the panel shows the current Slack status
+- Single-instance behavior: launching the script again reopens the existing control panel
+- Environment-based Slack token loading from `.env` or your shell
 
-## 🚀 Installation
+## Installation
 
-1. **Clone the repository:**
+1. Create and activate a virtual environment:
 
    ```bash
-   git clone https://github.com/yourusername/slack-status-menubar.git
-   cd slack-status-menubar
-   
-2.	Install dependencies:
-It is recommended to use a virtual environment:
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-3. Configure your environment:
-Create a .env file in the project root and add your Slack token:
-SLACK_TOKEN=xoxp-your-slack-token-here 
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
 
-## 🛠️  Usage
+2. Install dependencies:
 
-Once the app is running, you’ll see a Slack icon in your menu bar. Click it to reveal preset status options. Selecting a status will update your Slack status instantly.
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## 📋️  Requirements
-	•	Python 3.9+
-	•	macOS
-	•	Slack user OAuth token (xoxp-)
+3. Create a `.env` file in the project root:
 
-## 🧪Development
+   ```bash
+   SLACK_API_TOKEN=xoxp-your-slack-user-token
+   ```
 
-Feel free to fork and contribute! Add your own status messages, hook in Apple Shortcuts, or expand to support multiple Slack workspaces.
+   `SLACK_TOKEN` is also supported for older local setups.
+
+## Usage
+
+Run the app:
+
+```bash
+./run-main.sh
+```
+
+The control panel opens on launch. Use **Default** to apply the schedule-based status, choose a preset, or enter a custom status in the format:
+
+```text
+🌪, Working remotely
+```
+
+Launch `./run-main.sh` again while the app is already running to bring the existing control panel back to the front.
+
+## Status Schedule
+
+The default schedule lives in `status_schedule.json`:
+
+- Weekdays: Work from 4:00-14:00, Storms from 14:00-20:00, Sleep from 20:00-4:00
+- Weekends: Coffee from 4:00-7:00, Storms from 7:00-20:00, Sleep from 20:00-4:00
+
+Edit `status_schedule.json` to change labels, Slack emoji aliases, or time windows, then restart the app. Hours use 24-hour local time. A window can cross midnight by setting `start` later than `end`, such as `20` to `4`.
+
+If the config file is missing or invalid, the app falls back to the built-in default schedule.
+
+## Requirements
+
+- macOS
+- Python 3.9+
+- Slack user OAuth token with permission to update your user profile status
+
+## Development
+
+The active app is `main.py`. `legacy-menu-bar.py` is kept only as an older reference implementation.
 
 ## Acknowledgment
 
 Development of this project included AI-assisted coding support from ChatGPT/Codex. Final decisions, configuration, and deployment remain maintained by the project owner.
 
-## 📜License
+## License
 
 This project is licensed under the GNU GPL v3.0.
