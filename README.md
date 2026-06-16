@@ -39,6 +39,10 @@ Once the app is running, you’ll see a Slack icon in your menu bar. Click it to
 
 Feel free to fork and contribute! Add your own status messages, hook in Apple Shortcuts, or expand to support multiple Slack workspaces.
 
+## Acknowledgment
+
+Development of this project included AI-assisted coding support from ChatGPT/Codex. Final decisions, configuration, and deployment remain maintained by the project owner.
+
 ## 📜License
 
 This project is licensed under the GNU GPL v3.0.

@@ -1,0 +1,460 @@
+import os
+import ssl
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+import certifi
+import objc
+import rumps
+from dotenv import load_dotenv
+from AppKit import (
+    NSApp,
+    NSBackingStoreBuffered,
+    NSBezelStyleRounded,
+    NSButton,
+    NSFloatingWindowLevel,
+    NSFont,
+    NSMakeRect,
+    NSPanel,
+    NSTextField,
+    NSWindowStyleMaskClosable,
+    NSWindowStyleMaskFullSizeContentView,
+    NSWindowStyleMaskHUDWindow,
+    NSWindowStyleMaskTitled,
+)
+from Foundation import NSObject
+from pip._vendor.rich._emoji_codes import EMOJI as RICH_EMOJI
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+
+ICON_PATH = Path(__file__).resolve().parent / "assets" / "slack_status_icon.png"
+STATUS_ICON_PATHS = {
+    ":briefcase:": Path(__file__).resolve().parent / "assets" / "status_work.png",
+    "💼": Path(__file__).resolve().parent / "assets" / "status_work.png",
+    ":tornado:": Path(__file__).resolve().parent / "assets" / "status_storms.png",
+    "🌪": Path(__file__).resolve().parent / "assets" / "status_storms.png",
+    ":sleeping:": Path(__file__).resolve().parent / "assets" / "status_sleep.png",
+    "😴": Path(__file__).resolve().parent / "assets" / "status_sleep.png",
+    ":coffee:": Path(__file__).resolve().parent / "assets" / "status_coffee.png",
+    "☕": Path(__file__).resolve().parent / "assets" / "status_coffee.png",
+}
+STATUS_DISPLAY_ICONS = {
+    ":briefcase:": "💼",
+    "💼": "💼",
+    ":tornado:": "🌪",
+    "🌪": "🌪",
+    ":sleeping:": "😴",
+    "😴": "😴",
+    ":coffee:": "☕",
+    "☕": "☕",
+}
+RUNTIME_DIR = Path(tempfile.gettempdir())
+PID_FILE = RUNTIME_DIR / "slack_status_app.pid"
+SIGNAL_FILE = RUNTIME_DIR / "slack_status_app.signal"
+EMOJI_TO_SLACK_ALIAS = {}
+
+for alias, character in RICH_EMOJI.items():
+    normalized_character = character.replace("\ufe0f", "")
+    EMOJI_TO_SLACK_ALIAS.setdefault(normalized_character, f":{alias}:")
+
+
+def process_is_running(pid_text):
+    try:
+        pid = int(pid_text.strip())
+    except (TypeError, ValueError):
+        return False
+
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def notify_existing_instance():
+    if not PID_FILE.exists():
+        return False
+
+    if not process_is_running(PID_FILE.read_text()):
+        try:
+            PID_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        return False
+
+    SIGNAL_FILE.write_text(str(datetime.now().timestamp()))
+    return True
+
+
+def normalize_custom_emoji(value):
+    emoji_value = value.strip()
+    if not emoji_value:
+        return ""
+
+    if emoji_value.startswith(":") and emoji_value.endswith(":"):
+        return emoji_value
+
+    normalized_value = emoji_value.replace("\ufe0f", "")
+    if normalized_value in EMOJI_TO_SLACK_ALIAS:
+        return EMOJI_TO_SLACK_ALIAS[normalized_value]
+
+    if emoji_value in RICH_EMOJI:
+        return f":{emoji_value}:"
+
+    return emoji_value
+
+
+class ControlPanelDelegate(NSObject):
+    def initWithApp_(self, app):
+        self = objc.super(ControlPanelDelegate, self).init()
+        if self is None:
+            return None
+        self.app = app
+        return self
+
+    def triggerUpdateNow_(self, _sender):
+        self.app.update_status(notify=False)
+
+    def triggerWorkStatus_(self, _sender):
+        self.app.set_slack_status(":briefcase:", notify=False)
+
+    def triggerRemoteStatus_(self, _sender):
+        self.app.set_slack_status(":tornado:", notify=False)
+
+    def triggerSleepStatus_(self, _sender):
+        self.app.set_slack_status(":sleeping:", notify=False)
+
+    def triggerCustomStatus_(self, _sender):
+        self.app.set_custom_status(None)
+
+    def triggerQuit_(self, _sender):
+        self.app.quit_clicked(None)
+
+
+class SlackStatusApp(rumps.App):
+    def __init__(self):
+        load_dotenv(Path(__file__).resolve().parent / ".env")
+
+        icon_path = str(ICON_PATH) if ICON_PATH.exists() else None
+        super(SlackStatusApp, self).__init__(
+            "Slack Status",
+            title="Slack" if icon_path is None else None,
+            icon=icon_path,
+            template=bool(icon_path),
+            quit_button="Quit",
+        )
+        self.menu = ["Show Controls", "Update Now", "Set Custom Status"]
+
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        slack_token = os.getenv("SLACK_API_TOKEN") or os.getenv("SLACK_TOKEN")
+        if not slack_token:
+            rumps.alert(
+                title="Slack Status - Missing Token",
+                message="Set SLACK_API_TOKEN in .env or your shell environment.",
+            )
+        self.client = WebClient(
+            token=slack_token,
+            ssl=ssl_context,
+        )
+
+        self.control_panel = None
+        self.control_panel_delegate = None
+        self.default_status_button = None
+        self.panel_status_icon_label = None
+        self.panel_status_label = None
+        self.last_signal_mtime = SIGNAL_FILE.stat().st_mtime if SIGNAL_FILE.exists() else 0.0
+        PID_FILE.write_text(str(os.getpid()))
+
+        # Delay startup UI until after the menu bar item is visible.
+        self.startup_timer = rumps.Timer(self.run_startup_update, 1)
+        self.startup_timer.start()
+        self.timer = rumps.Timer(self.update_status, 3600)
+        self.timer.start()
+        self.signal_timer = rumps.Timer(self.check_for_show_panel_signal, 0.25)
+        self.signal_timer.start()
+
+    def run(self, **options):
+        try:
+            super(SlackStatusApp, self).run(**options)
+        finally:
+            self.cleanup_runtime_files()
+
+    def cleanup_runtime_files(self):
+        if PID_FILE.exists():
+            try:
+                if PID_FILE.read_text().strip() == str(os.getpid()):
+                    PID_FILE.unlink()
+            except FileNotFoundError:
+                pass
+
+    def quit_clicked(self, _):
+        self.cleanup_runtime_files()
+        rumps.quit_application()
+
+    def get_current_default_status(self):
+        current_hour = datetime.now().hour
+        current_day = datetime.now().weekday()  # Monday=0, Sunday=6
+
+        if current_day in [5, 6]:
+            if 7 <= current_hour < 20:
+                return "Storms", ":tornado:"
+            if current_hour >= 20 or current_hour < 4:
+                return "Sleep", ":sleeping:"
+            return "Coffee", ":coffee:"
+
+        if 4 <= current_hour < 14:
+            return "Work", ":briefcase:"
+        if 14 <= current_hour < 20:
+            return "Storms", ":tornado:"
+        return "Sleep", ":sleeping:"
+
+    def build_control_panel(self):
+        if self.control_panel is not None:
+            return
+
+        self.control_panel_delegate = ControlPanelDelegate.alloc().initWithApp_(self)
+
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 320, 250),
+            NSWindowStyleMaskTitled
+            | NSWindowStyleMaskClosable
+            | NSWindowStyleMaskHUDWindow
+            | NSWindowStyleMaskFullSizeContentView,
+            NSBackingStoreBuffered,
+            False,
+        )
+        panel.setTitle_("Slack Status Controls")
+        panel.setFloatingPanel_(True)
+        panel.setLevel_(NSFloatingWindowLevel)
+        panel.setReleasedWhenClosed_(False)
+        panel.setHidesOnDeactivate_(False)
+        panel.center()
+
+        content_view = panel.contentView()
+
+        status_icon_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 184, 38, 42))
+        status_icon_label.setStringValue_(self.get_status_display_icon(self.get_current_default_status()[1]))
+        status_icon_label.setBezeled_(False)
+        status_icon_label.setDrawsBackground_(False)
+        status_icon_label.setEditable_(False)
+        status_icon_label.setSelectable_(False)
+        status_icon_label.setFont_(NSFont.systemFontOfSize_(30))
+        content_view.addSubview_(status_icon_label)
+        self.panel_status_icon_label = status_icon_label
+
+        title_label = NSTextField.alloc().initWithFrame_(NSMakeRect(68, 205, 232, 24))
+        title_label.setStringValue_("Quick actions")
+        title_label.setBezeled_(False)
+        title_label.setDrawsBackground_(False)
+        title_label.setEditable_(False)
+        title_label.setSelectable_(False)
+        title_label.setFont_(NSFont.boldSystemFontOfSize_(16))
+        content_view.addSubview_(title_label)
+
+        subtitle_label = NSTextField.alloc().initWithFrame_(NSMakeRect(68, 185, 232, 18))
+        subtitle_label.setStringValue_("Launch the script again anytime to reopen this panel.")
+        subtitle_label.setBezeled_(False)
+        subtitle_label.setDrawsBackground_(False)
+        subtitle_label.setEditable_(False)
+        subtitle_label.setSelectable_(False)
+        subtitle_label.setFont_(NSFont.systemFontOfSize_(12))
+        content_view.addSubview_(subtitle_label)
+
+        status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 18, 280, 18))
+        status_label.setStringValue_("Ready")
+        status_label.setBezeled_(False)
+        status_label.setDrawsBackground_(False)
+        status_label.setEditable_(False)
+        status_label.setSelectable_(False)
+        status_label.setFont_(NSFont.systemFontOfSize_(12))
+        content_view.addSubview_(status_label)
+        self.panel_status_label = status_label
+
+        default_label, _ = self.get_current_default_status()
+        buttons = [
+            ("Custom...", "triggerCustomStatus:", 20, 140, 130),
+            (f"Default: {default_label}", "triggerUpdateNow:", 170, 140, 130),
+            ("Storms", "triggerRemoteStatus:", 20, 95, 130),
+            ("Sleep", "triggerSleepStatus:", 170, 95, 130),
+            ("Work", "triggerWorkStatus:", 20, 50, 130),
+            ("Quit", "triggerQuit:", 170, 50, 130),
+        ]
+
+        for title, action_name, x_pos, y_pos, width in buttons:
+            button = NSButton.alloc().initWithFrame_(NSMakeRect(x_pos, y_pos, width, 32))
+            button.setTitle_(title)
+            button.setBezelStyle_(NSBezelStyleRounded)
+            button.setTarget_(self.control_panel_delegate)
+            button.setAction_(action_name)
+            content_view.addSubview_(button)
+            if action_name == "triggerUpdateNow:":
+                self.default_status_button = button
+
+        self.control_panel = panel
+
+    def show_control_panel(self):
+        self.build_control_panel()
+        self.refresh_default_status_button()
+        NSApp().activateIgnoringOtherApps_(True)
+        self.control_panel.center()
+        self.control_panel.makeKeyAndOrderFront_(None)
+
+    def hide_control_panel(self):
+        if self.control_panel is not None:
+            self.control_panel.orderOut_(None)
+
+    def update_panel_status(self, message):
+        if self.panel_status_label is not None:
+            self.panel_status_label.setStringValue_(message)
+
+    def get_status_display_icon(self, emoji):
+        normalized_emoji = normalize_custom_emoji(emoji)
+        return STATUS_DISPLAY_ICONS.get(emoji) or STATUS_DISPLAY_ICONS.get(normalized_emoji) or "●"
+
+    def update_panel_status_icon(self, emoji):
+        if self.panel_status_icon_label is not None:
+            self.panel_status_icon_label.setStringValue_(self.get_status_display_icon(emoji))
+
+    def refresh_default_status_button(self):
+        if self.default_status_button is None:
+            return
+        default_label, _ = self.get_current_default_status()
+        self.default_status_button.setTitle_(f"Default: {default_label}")
+
+    def update_menu_bar_icon(self, emoji):
+        normalized_emoji = normalize_custom_emoji(emoji)
+
+        for candidate in (emoji, normalized_emoji):
+            icon_path = STATUS_ICON_PATHS.get(candidate)
+            if icon_path is not None and icon_path.exists():
+                self.update_panel_status_icon(candidate)
+                self.template = True
+                self.icon = str(icon_path)
+                self.title = None
+                return
+
+        self.update_panel_status_icon(emoji)
+        if ICON_PATH.exists():
+            self.template = True
+            self.icon = str(ICON_PATH)
+            self.title = None
+        else:
+            self.icon = None
+            self.title = "Slack"
+
+    def check_for_show_panel_signal(self, _):
+        if not SIGNAL_FILE.exists():
+            return
+
+        signal_mtime = SIGNAL_FILE.stat().st_mtime
+        if signal_mtime <= self.last_signal_mtime:
+            return
+
+        self.last_signal_mtime = signal_mtime
+        self.show_control_panel()
+
+    def run_startup_update(self, _):
+        self.startup_timer.stop()
+        self.show_control_panel()
+        self.update_status()
+
+    @rumps.clicked("Show Controls")
+    def show_controls(self, _):
+        self.show_control_panel()
+
+    @rumps.clicked("Update Now")
+    def update_now(self, _):
+        self.update_status()
+
+    @rumps.clicked("Set Custom Status")
+    def set_custom_status(self, _):
+        response = rumps.Window(
+            title="Custom Slack Status",
+            message="Enter status emoji and optional text separated by a comma\n(e.g., 🌪, Working remotely)",
+            default_text="🌪, Working remotely",
+        ).run()
+
+        if response.clicked:
+            user_input = response.text.strip()
+            parts = [part.strip() for part in user_input.split(",", 1)]
+            if len(parts) == 2:
+                emoji, status_text = parts
+                self.set_slack_status(emoji, status_text, notify=False)
+            elif len(parts) == 1 and parts[0]:
+                emoji = parts[0]
+                self.set_slack_status(emoji, notify=False)
+
+    def update_status(self, _=None, notify=True):
+        self.refresh_default_status_button()
+        _, emoji = self.get_current_default_status()
+        self.set_slack_status(emoji, notify=notify)
+
+    def set_slack_status(self, emoji, status_text="", notify=True):
+        requested_emoji = emoji.strip()
+        normalized_emoji = normalize_custom_emoji(requested_emoji)
+        emoji_candidates = []
+
+        for candidate in (requested_emoji, normalized_emoji):
+            if candidate and candidate not in emoji_candidates:
+                emoji_candidates.append(candidate)
+
+        try:
+            last_error = None
+            applied_emoji = requested_emoji or normalized_emoji
+
+            for candidate in emoji_candidates:
+                try:
+                    self.client.users_profile_set(
+                        profile={
+                            "status_text": status_text,
+                            "status_emoji": candidate,
+                            "status_expiration": 0,
+                        }
+                    )
+                    applied_emoji = candidate
+                    last_error = None
+                    break
+                except SlackApiError as error:
+                    last_error = error
+                    if error.response["error"] != "profile_status_set_failed_not_valid_emoji":
+                        raise
+
+            if last_error is not None:
+                raise last_error
+
+            # Notification with sound depending on emoji
+            if applied_emoji in {":tornado:", "🌪"}:
+                sound_name = "Funk"
+            elif applied_emoji in {":briefcase:", "💼"}:
+                sound_name = "Ping"
+            elif applied_emoji in {":sleeping:", "😴"}:
+                sound_name = "Basso"
+            else:
+                sound_name = "Submarine"
+
+            status_message = f"Status set to {applied_emoji} {status_text}".strip()
+            self.update_menu_bar_icon(applied_emoji)
+            self.update_panel_status(status_message)
+
+            if notify:
+                rumps.notification(
+                    title="Slack Status Updated",
+                    subtitle="",
+                    message=status_message,
+                    sound=sound_name,
+                )
+        except SlackApiError as e:
+            self.update_panel_status(f"Slack error: {e.response['error']}")
+            rumps.alert(title="Error", message=f"Failed to update status: {e.response['error']}")
+        except Exception as e:
+            self.update_panel_status(f"Error: {e}")
+            rumps.alert(title="Error", message=f"Failed to update status: {e}")
+
+
+if __name__ == "__main__":
+    if notify_existing_instance():
+        raise SystemExit(0)
+
+    app = SlackStatusApp()
+    app.run()
