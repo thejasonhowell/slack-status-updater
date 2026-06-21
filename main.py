@@ -119,6 +119,59 @@ def normalize_custom_emoji(value):
     return emoji_value
 
 
+def emoji_alias_names(value):
+    emoji_value = value.strip()
+    if not emoji_value:
+        return []
+
+    aliases = []
+    candidates = [emoji_value, normalize_custom_emoji(emoji_value)]
+    for candidate in candidates:
+        if candidate.startswith(":") and candidate.endswith(":"):
+            alias = candidate.strip(":")
+            for alias_candidate in (alias, alias.replace("-", "_")):
+                if alias_candidate and alias_candidate not in aliases:
+                    aliases.append(alias_candidate)
+
+    return aliases
+
+
+def emoji_display_glyph(value):
+    emoji_value = value.strip()
+    if not emoji_value:
+        return ""
+
+    for candidate in (emoji_value, normalize_custom_emoji(emoji_value)):
+        if candidate in STATUS_DISPLAY_ICONS:
+            return STATUS_DISPLAY_ICONS[candidate]
+
+        normalized_candidate = candidate.replace("\ufe0f", "")
+        if normalized_candidate in EMOJI_TO_SLACK_ALIAS:
+            return normalized_candidate
+
+        for alias in emoji_alias_names(candidate):
+            if alias in RICH_EMOJI:
+                return RICH_EMOJI[alias].replace("\ufe0f", "")
+
+    return ""
+
+
+def status_icon_path_for_emoji(value):
+    normalized_emoji = normalize_custom_emoji(value)
+
+    for candidate in (value, normalized_emoji):
+        icon_path = STATUS_ICON_PATHS.get(candidate)
+        if icon_path is not None and icon_path.exists():
+            return icon_path
+
+    for alias in emoji_alias_names(value):
+        icon_path = Path(__file__).resolve().parent / "assets" / f"status_{alias}.png"
+        if icon_path.exists():
+            return icon_path
+
+    return None
+
+
 def hour_is_in_window(hour, start, end):
     if start == end:
         return True
@@ -383,8 +436,7 @@ class SlackStatusApp(rumps.App):
             self.panel_current_status_label.setStringValue_(message)
 
     def get_status_display_icon(self, emoji):
-        normalized_emoji = normalize_custom_emoji(emoji)
-        return STATUS_DISPLAY_ICONS.get(emoji) or STATUS_DISPLAY_ICONS.get(normalized_emoji) or "●"
+        return emoji_display_glyph(emoji) or "●"
 
     def update_panel_status_icon(self, emoji):
         if self.panel_status_icon_label is not None:
@@ -397,16 +449,21 @@ class SlackStatusApp(rumps.App):
         self.default_status_button.setTitle_(f"Default: {default_label}")
 
     def update_menu_bar_icon(self, emoji):
-        normalized_emoji = normalize_custom_emoji(emoji)
+        icon_path = status_icon_path_for_emoji(emoji)
+        if icon_path is not None:
+            self.update_panel_status_icon(emoji)
+            self.template = True
+            self.icon = str(icon_path)
+            self.title = None
+            return
 
-        for candidate in (emoji, normalized_emoji):
-            icon_path = STATUS_ICON_PATHS.get(candidate)
-            if icon_path is not None and icon_path.exists():
-                self.update_panel_status_icon(candidate)
-                self.template = True
-                self.icon = str(icon_path)
-                self.title = None
-                return
+        display_glyph = emoji_display_glyph(emoji)
+        if display_glyph:
+            self.update_panel_status_icon(emoji)
+            self.icon = None
+            self.template = False
+            self.title = display_glyph
+            return
 
         self.update_panel_status_icon(emoji)
         if ICON_PATH.exists():

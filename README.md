@@ -61,6 +61,24 @@ Edit `status_schedule.json` to change labels, Slack emoji aliases, or time windo
 
 If the config file is missing or invalid, the app falls back to the built-in default schedule.
 
+## Menulet Icons
+
+The app uses bundled PNG icons for the main statuses. For other Slack emoji aliases, it will try to show the matching Unicode emoji glyph in the menu bar.
+
+To add a custom menu bar PNG for another status, place a 64 x 64 transparent PNG in `assets` using this naming pattern:
+
+```text
+assets/status_<emoji_alias>.png
+```
+
+Examples:
+
+- `:phone:` -> `assets/status_phone.png`
+- `:calendar:` -> `assets/status_calendar.png`
+- `:spiral_calendar_pad:` -> `assets/status_spiral_calendar_pad.png`
+
+If no matching PNG or Unicode glyph exists, the app falls back to the generic Slack status icon.
+
 ## Requirements
 
 - macOS
