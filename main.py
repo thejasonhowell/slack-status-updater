@@ -2,7 +2,7 @@ import json
 import os
 import ssl
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import certifi
@@ -66,6 +66,7 @@ DEFAULT_STATUS_SCHEDULE = {
 RUNTIME_DIR = Path(tempfile.gettempdir())
 PID_FILE = RUNTIME_DIR / "slack_status_app.pid"
 SIGNAL_FILE = RUNTIME_DIR / "slack_status_app.signal"
+PAUSE_FILE = RUNTIME_DIR / "slack_status_app.pause_until"
 EMOJI_TO_SLACK_ALIAS = {}
 
 for alias, character in RICH_EMOJI.items():
@@ -99,6 +100,10 @@ def notify_existing_instance():
 
     SIGNAL_FILE.write_text(str(datetime.now().timestamp()))
     return True
+
+
+def format_hour(hour):
+    return f"{int(hour):02d}:00"
 
 
 def normalize_custom_emoji(value):
@@ -230,6 +235,85 @@ def status_for_time(schedule, current_time=None):
     return fallback["label"], fallback["emoji"]
 
 
+def schedule_period_for_time(current_time):
+    return "weekend" if current_time.weekday() in [5, 6] else "weekday"
+
+
+def next_schedule_change_after(schedule, current_time=None):
+    current_time = current_time or datetime.now()
+    current_period = schedule_period_for_time(current_time)
+    current_label, current_emoji = status_for_time(schedule, current_time)
+
+    for hour_offset in range(1, 24 * 8 + 1):
+        candidate = current_time + timedelta(hours=hour_offset)
+        candidate = candidate.replace(minute=0, second=0, microsecond=0)
+        label, emoji = status_for_time(schedule, candidate)
+        period = schedule_period_for_time(candidate)
+        if label != current_label or emoji != current_emoji or period != current_period:
+            return candidate
+
+    return current_time + timedelta(hours=1)
+
+
+def format_pause_until(pause_until):
+    return pause_until.strftime("%a %b %-d, %-I:%M %p")
+
+
+def parse_pause_until(value, current_time=None):
+    current_time = current_time or datetime.now()
+    pause_value = value.strip().lower()
+    if not pause_value:
+        return None
+
+    if pause_value in {"tomorrow", "tmrw"}:
+        tomorrow = current_time + timedelta(days=1)
+        return tomorrow.replace(hour=8, minute=0, second=0, microsecond=0)
+
+    if pause_value.endswith("h") and pause_value[:-1].strip().replace(".", "", 1).isdigit():
+        return current_time + timedelta(hours=float(pause_value[:-1].strip()))
+
+    if pause_value.endswith("m") and pause_value[:-1].strip().isdigit():
+        return current_time + timedelta(minutes=int(pause_value[:-1].strip()))
+
+    for date_format in ("%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M %p"):
+        try:
+            return datetime.strptime(value.strip(), date_format)
+        except ValueError:
+            pass
+
+    for time_format in ("%H:%M", "%I:%M %p"):
+        try:
+            parsed_time = datetime.strptime(value.strip(), time_format)
+        except ValueError:
+            continue
+
+        pause_until = current_time.replace(
+            hour=parsed_time.hour,
+            minute=parsed_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if pause_until <= current_time:
+            pause_until += timedelta(days=1)
+        return pause_until
+
+    return None
+
+
+def schedule_summary_lines(schedule):
+    lines = []
+    for title, period in (("Weekday", "weekday"), ("Weekend", "weekend")):
+        parts = []
+        for entry in schedule[period]:
+            glyph = emoji_display_glyph(entry["emoji"])
+            icon = f" {glyph}" if glyph else ""
+            parts.append(
+                f"{format_hour(entry['start'])}-{format_hour(entry['end'])} {entry['label']}{icon}"
+            )
+        lines.append(f"{title}: " + " | ".join(parts))
+    return lines
+
+
 class ControlPanelDelegate(NSObject):
     def initWithApp_(self, app):
         self = objc.super(ControlPanelDelegate, self).init()
@@ -239,7 +323,7 @@ class ControlPanelDelegate(NSObject):
         return self
 
     def triggerUpdateNow_(self, _sender):
-        self.app.update_status(notify=False)
+        self.app.update_status(notify=False, ignore_pause=True)
 
     def triggerWorkStatus_(self, _sender):
         self.app.set_slack_status(":briefcase:", notify=False)
@@ -252,6 +336,12 @@ class ControlPanelDelegate(NSObject):
 
     def triggerCustomStatus_(self, _sender):
         self.app.set_custom_status(None)
+
+    def triggerPauseAutoStatus_(self, _sender):
+        self.app.pause_auto_updates_from_prompt()
+
+    def triggerResumeAutoStatus_(self, _sender):
+        self.app.resume_auto_updates()
 
     def triggerQuit_(self, _sender):
         self.app.quit_clicked(None)
@@ -269,7 +359,7 @@ class SlackStatusApp(rumps.App):
             template=bool(icon_path),
             quit_button="Quit",
         )
-        self.menu = ["Show Controls", "Update Now", "Set Custom Status"]
+        self.menu = ["Show Controls", "Update Now", "Set Custom Status", "Pause Auto Updates", "Resume Auto Updates"]
 
         ssl_context = ssl.create_default_context(cafile=certifi.where())
         slack_token = os.getenv("SLACK_API_TOKEN") or os.getenv("SLACK_TOKEN")
@@ -288,6 +378,8 @@ class SlackStatusApp(rumps.App):
         self.control_panel_delegate = None
         self.default_status_button = None
         self.panel_current_status_label = None
+        self.panel_pause_status_label = None
+        self.panel_schedule_label = None
         self.panel_status_icon_label = None
         self.panel_status_label = None
         self.last_signal_mtime = SIGNAL_FILE.stat().st_mtime if SIGNAL_FILE.exists() else 0.0
@@ -329,7 +421,7 @@ class SlackStatusApp(rumps.App):
         self.control_panel_delegate = ControlPanelDelegate.alloc().initWithApp_(self)
 
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 320, 275),
+            NSMakeRect(0, 0, 420, 430),
             NSWindowStyleMaskTitled
             | NSWindowStyleMaskClosable
             | NSWindowStyleMaskHUDWindow
@@ -346,7 +438,7 @@ class SlackStatusApp(rumps.App):
 
         content_view = panel.contentView()
 
-        status_icon_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 209, 38, 42))
+        status_icon_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 364, 38, 42))
         status_icon_label.setStringValue_(self.get_status_display_icon(self.get_current_default_status()[1]))
         status_icon_label.setBezeled_(False)
         status_icon_label.setDrawsBackground_(False)
@@ -356,7 +448,7 @@ class SlackStatusApp(rumps.App):
         content_view.addSubview_(status_icon_label)
         self.panel_status_icon_label = status_icon_label
 
-        title_label = NSTextField.alloc().initWithFrame_(NSMakeRect(68, 230, 232, 24))
+        title_label = NSTextField.alloc().initWithFrame_(NSMakeRect(68, 385, 332, 24))
         title_label.setStringValue_("Quick actions")
         title_label.setBezeled_(False)
         title_label.setDrawsBackground_(False)
@@ -365,7 +457,7 @@ class SlackStatusApp(rumps.App):
         title_label.setFont_(NSFont.boldSystemFontOfSize_(16))
         content_view.addSubview_(title_label)
 
-        subtitle_label = NSTextField.alloc().initWithFrame_(NSMakeRect(68, 210, 232, 18))
+        subtitle_label = NSTextField.alloc().initWithFrame_(NSMakeRect(68, 365, 332, 18))
         subtitle_label.setStringValue_("Launch the script again anytime to reopen this panel.")
         subtitle_label.setBezeled_(False)
         subtitle_label.setDrawsBackground_(False)
@@ -374,7 +466,36 @@ class SlackStatusApp(rumps.App):
         subtitle_label.setFont_(NSFont.systemFontOfSize_(12))
         content_view.addSubview_(subtitle_label)
 
-        current_status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 42, 280, 18))
+        schedule_title_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 312, 380, 20))
+        schedule_title_label.setStringValue_("Schedule")
+        schedule_title_label.setBezeled_(False)
+        schedule_title_label.setDrawsBackground_(False)
+        schedule_title_label.setEditable_(False)
+        schedule_title_label.setSelectable_(False)
+        schedule_title_label.setFont_(NSFont.boldSystemFontOfSize_(13))
+        content_view.addSubview_(schedule_title_label)
+
+        schedule_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 255, 380, 50))
+        schedule_label.setStringValue_("\n".join(schedule_summary_lines(self.status_schedule)))
+        schedule_label.setBezeled_(False)
+        schedule_label.setDrawsBackground_(False)
+        schedule_label.setEditable_(False)
+        schedule_label.setSelectable_(False)
+        schedule_label.setFont_(NSFont.systemFontOfSize_(12))
+        content_view.addSubview_(schedule_label)
+        self.panel_schedule_label = schedule_label
+
+        pause_status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 225, 380, 18))
+        pause_status_label.setStringValue_(self.auto_pause_status_text())
+        pause_status_label.setBezeled_(False)
+        pause_status_label.setDrawsBackground_(False)
+        pause_status_label.setEditable_(False)
+        pause_status_label.setSelectable_(False)
+        pause_status_label.setFont_(NSFont.systemFontOfSize_(12))
+        content_view.addSubview_(pause_status_label)
+        self.panel_pause_status_label = pause_status_label
+
+        current_status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 42, 380, 18))
         current_status_label.setStringValue_("Current Slack: checking...")
         current_status_label.setBezeled_(False)
         current_status_label.setDrawsBackground_(False)
@@ -384,7 +505,7 @@ class SlackStatusApp(rumps.App):
         content_view.addSubview_(current_status_label)
         self.panel_current_status_label = current_status_label
 
-        status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 18, 280, 18))
+        status_label = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 18, 380, 18))
         status_label.setStringValue_("Ready")
         status_label.setBezeled_(False)
         status_label.setDrawsBackground_(False)
@@ -396,12 +517,14 @@ class SlackStatusApp(rumps.App):
 
         default_label, _ = self.get_current_default_status()
         buttons = [
-            ("Custom...", "triggerCustomStatus:", 20, 165, 130),
-            (f"Default: {default_label}", "triggerUpdateNow:", 170, 165, 130),
-            ("Storms", "triggerRemoteStatus:", 20, 120, 130),
-            ("Sleep", "triggerSleepStatus:", 170, 120, 130),
-            ("Work", "triggerWorkStatus:", 20, 75, 130),
-            ("Quit", "triggerQuit:", 170, 75, 130),
+            ("Custom...", "triggerCustomStatus:", 20, 175, 120),
+            (f"Default: {default_label}", "triggerUpdateNow:", 150, 175, 120),
+            ("Pause Auto...", "triggerPauseAutoStatus:", 280, 175, 120),
+            ("Storms", "triggerRemoteStatus:", 20, 130, 120),
+            ("Sleep", "triggerSleepStatus:", 150, 130, 120),
+            ("Resume Auto", "triggerResumeAutoStatus:", 280, 130, 120),
+            ("Work", "triggerWorkStatus:", 20, 85, 120),
+            ("Quit", "triggerQuit:", 280, 85, 120),
         ]
 
         for title, action_name, x_pos, y_pos, width in buttons:
@@ -435,6 +558,84 @@ class SlackStatusApp(rumps.App):
         if self.panel_current_status_label is not None:
             self.panel_current_status_label.setStringValue_(message)
 
+    def update_panel_pause_status(self):
+        if self.panel_pause_status_label is not None:
+            self.panel_pause_status_label.setStringValue_(self.auto_pause_status_text())
+
+    def load_pause_until(self):
+        if not PAUSE_FILE.exists():
+            return None
+
+        try:
+            pause_until = datetime.fromisoformat(PAUSE_FILE.read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+        if pause_until <= datetime.now():
+            self.resume_auto_updates(notify=False)
+            return None
+
+        return pause_until
+
+    def auto_pause_status_text(self):
+        pause_until = self.load_pause_until()
+        if pause_until is None:
+            return "Auto updates: active"
+        return f"Auto updates: paused until {format_pause_until(pause_until)}"
+
+    def auto_updates_are_paused(self):
+        return self.load_pause_until() is not None
+
+    def pause_auto_updates_until(self, pause_until, notify=True):
+        PAUSE_FILE.write_text(pause_until.isoformat(timespec="minutes"))
+        message = f"Auto updates paused until {format_pause_until(pause_until)}"
+        self.update_panel_pause_status()
+        self.update_panel_status(message)
+        if notify:
+            rumps.notification(
+                title="Slack Status Auto Updates Paused",
+                subtitle="",
+                message=message,
+                sound="Ping",
+            )
+
+    def pause_auto_updates_from_prompt(self, _=None):
+        default_until = next_schedule_change_after(self.status_schedule)
+        response = rumps.Window(
+            title="Pause Slack Status Auto Updates",
+            message="Pause until when? Use 2h, 90m, tomorrow, 18:30, or YYYY-MM-DD HH:MM.",
+            default_text=default_until.strftime("%Y-%m-%d %H:%M"),
+        ).run()
+
+        if not response.clicked:
+            return
+
+        pause_until = parse_pause_until(response.text)
+        if pause_until is None or pause_until <= datetime.now():
+            rumps.alert(
+                title="Invalid Pause Time",
+                message="Enter a future time like 2h, 90m, tomorrow, 18:30, or 2026-06-21 18:30.",
+            )
+            return
+
+        self.pause_auto_updates_until(pause_until)
+
+    def resume_auto_updates(self, _=None, notify=True):
+        try:
+            PAUSE_FILE.unlink()
+        except FileNotFoundError:
+            pass
+
+        self.update_panel_pause_status()
+        self.update_panel_status("Auto updates active")
+        if notify:
+            rumps.notification(
+                title="Slack Status Auto Updates Resumed",
+                subtitle="",
+                message="Scheduled status updates are active again.",
+                sound="Ping",
+            )
+
     def get_status_display_icon(self, emoji):
         return emoji_display_glyph(emoji) or "●"
 
@@ -447,6 +648,7 @@ class SlackStatusApp(rumps.App):
             return
         default_label, _ = self.get_current_default_status()
         self.default_status_button.setTitle_(f"Default: {default_label}")
+        self.update_panel_pause_status()
 
     def update_menu_bar_icon(self, emoji):
         icon_path = status_icon_path_for_emoji(emoji)
@@ -497,13 +699,13 @@ class SlackStatusApp(rumps.App):
 
     @rumps.clicked("Update Now")
     def update_now(self, _):
-        self.update_status()
+        self.update_status(ignore_pause=True)
 
     @rumps.clicked("Set Custom Status")
     def set_custom_status(self, _):
         response = rumps.Window(
             title="Custom Slack Status",
-            message="Enter status emoji and optional text separated by a comma\n(e.g., 🌪, Working remotely)",
+            message="Enter status emoji and optional text separated by a comma\nAuto updates pause until the next schedule change.",
             default_text="🌪, Working remotely",
         ).run()
 
@@ -512,13 +714,27 @@ class SlackStatusApp(rumps.App):
             parts = [part.strip() for part in user_input.split(",", 1)]
             if len(parts) == 2:
                 emoji, status_text = parts
-                self.set_slack_status(emoji, status_text, notify=False)
+                if self.set_slack_status(emoji, status_text, notify=False):
+                    self.pause_auto_updates_until(next_schedule_change_after(self.status_schedule), notify=False)
             elif len(parts) == 1 and parts[0]:
                 emoji = parts[0]
-                self.set_slack_status(emoji, notify=False)
+                if self.set_slack_status(emoji, notify=False):
+                    self.pause_auto_updates_until(next_schedule_change_after(self.status_schedule), notify=False)
 
-    def update_status(self, _=None, notify=True):
+    @rumps.clicked("Pause Auto Updates")
+    def pause_auto_updates_clicked(self, _):
+        self.pause_auto_updates_from_prompt()
+
+    @rumps.clicked("Resume Auto Updates")
+    def resume_auto_updates_clicked(self, _):
+        self.resume_auto_updates()
+
+    def update_status(self, _=None, notify=True, ignore_pause=False):
         self.refresh_default_status_button()
+        if not ignore_pause and self.auto_updates_are_paused():
+            self.update_panel_status(self.auto_pause_status_text())
+            return
+
         _, emoji = self.get_current_default_status()
         self.set_slack_status(emoji, notify=notify)
 
@@ -594,12 +810,15 @@ class SlackStatusApp(rumps.App):
                     message=status_message,
                     sound=sound_name,
                 )
+            return True
         except SlackApiError as e:
             self.update_panel_status(f"Slack error: {e.response['error']}")
             rumps.alert(title="Error", message=f"Failed to update status: {e.response['error']}")
+            return False
         except Exception as e:
             self.update_panel_status(f"Error: {e}")
             rumps.alert(title="Error", message=f"Failed to update status: {e}")
+            return False
 
 
 if __name__ == "__main__":

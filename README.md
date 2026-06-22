@@ -48,6 +48,8 @@ The control panel opens on launch. Use **Default** to apply the schedule-based s
 🌪, Working remotely
 ```
 
+When you set a custom status, automatic schedule updates pause until the next schedule change so the custom status is not immediately overwritten.
+
 Launch `./run-main.sh` again while the app is already running to bring the existing control panel back to the front.
 
 ## Status Schedule
@@ -60,6 +62,20 @@ The default schedule lives in `status_schedule.json`:
 Edit `status_schedule.json` to change labels, Slack emoji aliases, or time windows, then restart the app. Hours use 24-hour local time. A window can cross midnight by setting `start` later than `end`, such as `20` to `4`.
 
 If the config file is missing or invalid, the app falls back to the built-in default schedule.
+
+## Pausing Auto Updates
+
+Use **Pause Auto...** in the control panel to stop scheduled status updates until a future time. Manual buttons still work while auto updates are paused.
+
+Accepted pause inputs:
+
+- `2h`
+- `90m`
+- `tomorrow`
+- `18:30`
+- `2026-06-21 18:30`
+
+Use **Resume Auto** to turn scheduled updates back on.
 
 ## Menulet Icons
 
