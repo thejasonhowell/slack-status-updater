@@ -1,0 +1,42 @@
+[
+  {
+    "label": "Work",
+    "emoji": ":briefcase:",
+    "status_text": "At work"
+  },
+  {
+    "label": "Storms",
+    "emoji": ":tornado:",
+    "status_text": "Available for spotting"
+  },
+  {
+    "label": "Sleep",
+    "emoji": ":sleeping:",
+    "status_text": "Sleeping"
+  },
+  {
+    "label": "Coffee",
+    "emoji": ":coffee:",
+    "status_text": ""
+  },
+  {
+    "label": "Unavailable",
+    "emoji": ":red_circle:",
+    "status_text": "Unavailable"
+  },
+  {
+    "label": "Busy",
+    "emoji": ":calendar:",
+    "status_text": "Busy"
+  },
+  {
+    "label": "FIRETRVL",
+    "emoji": ":red_car:",
+    "status_text": "Find me on FIRETRVL (Zone 1 / Channel 12)"
+  },
+  {
+    "label": "Available",
+    "emoji": ":large_green_circle:",
+    "status_text": "Available"
+  }
+]

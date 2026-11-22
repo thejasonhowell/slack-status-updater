@@ -2,41 +2,47 @@
   "weekday": [
     {
       "label": "Work",
+      "status_text": "At work",
       "emoji": ":briefcase:",
-      "start": 4,
-      "end": 14
+      "start": 7,
+      "end": 15
     },
     {
       "label": "Storms",
+      "weather_aware": true,
       "emoji": ":tornado:",
-      "start": 14,
-      "end": 20
+      "start": 15,
+      "status_text": "Available for spotting",
+      "end": 21
     },
     {
       "label": "Sleep",
+      "status_text": "Sleeping",
       "emoji": ":sleeping:",
-      "start": 20,
-      "end": 4
+      "start": 21,
+      "end": 7
     }
   ],
   "weekend": [
     {
       "label": "Coffee",
       "emoji": ":coffee:",
-      "start": 4,
-      "end": 7
+      "start": 6,
+      "end": 8
     },
     {
       "label": "Storms",
+      "weather_aware": true,
       "emoji": ":tornado:",
-      "start": 7,
-      "end": 20
+      "start": 8,
+      "end": 21
     },
     {
       "label": "Sleep",
+      "status_text": "Sleeping",
       "emoji": ":sleeping:",
-      "start": 20,
-      "end": 4
+      "start": 21,
+      "end": 6
     }
   ]
 }
